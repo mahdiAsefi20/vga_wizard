@@ -1478,7 +1478,7 @@ const BROLL_TYPES = DATA_INPUT_STRUCTURE.broll_types.map(item => ({
   desc: item.id === "ui_screen" ? "برای نشان دادن نرم‌افزار، گزارش یا صفحه کنترل" : item.id === "real_workplace" ? "برای نشان دادن استفاده واقعی از محصول" : item.id === "product_closeup" ? "برای نشان دادن جنس، جزئیات و بسته‌بندی" : "برای توضیح ساده آمار، مراحل یا مزیت‌ها",
   icon: item.id === "ui_screen" ? "🖥" : item.id === "real_workplace" ? "🏢" : item.id === "product_closeup" ? "🔍" : "✨",
 }));
-const VOICEOVER_LANGUAGES = ["فارسی", "انگلیسی", "عربی"];
+const VOICEOVER_LANGUAGES = ["فارسی", "انگلیسی"];
 const VOICEOVER_TONES = [
   {id:"calm",          name:"آرام و مطمئن"},
   {id:"energetic",     name:"شاد و پرانرژی"},
