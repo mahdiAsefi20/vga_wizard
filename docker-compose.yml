@@ -1,0 +1,7 @@
+services:
+  wizard:
+    build:
+      context: ./tsx-preview
+    ports:
+      - "8080:80"
+    restart: unless-stopped
