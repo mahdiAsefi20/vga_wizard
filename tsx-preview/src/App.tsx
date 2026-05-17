@@ -1829,6 +1829,160 @@ function isSuggested(form, key, value, suggestion) {
   return suggestion === value && form[key] !== value && safeSuggestion(form, key, value);
 }
 
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result || "");
+    reader.onerror = () => reject(reader.error || new Error("File could not be read"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function buildUploadRecord(file, extra = {}) {
+  const dataUrl = await readFileAsDataURL(file);
+  return {
+    file,
+    name: file.name,
+    url: dataUrl,
+    dataUrl,
+    ...extra,
+  };
+}
+
+function selectedOption(options, id) {
+  if (!id) return null;
+  const item = options.find(option => option.id === id);
+  if (!item) return { id, label: id };
+  const selected = {
+    id: item.id,
+    label: item.name || item.label || item.id,
+  };
+  if (item.desc) selected.description = item.desc;
+  if (item.icon) selected.icon = item.icon;
+  if (item.swatch) selected.swatch = item.swatch;
+  return selected;
+}
+
+function uploadToJson(upload) {
+  if (!upload) return null;
+  return {
+    name: upload.name || upload.file?.name || "",
+    type: upload.file?.type || "",
+    size: upload.file?.size ?? null,
+    lastModified: upload.file?.lastModified ?? null,
+    dataUrl: upload.dataUrl || upload.url || null,
+  };
+}
+
+function buildVideoRequestJson(form) {
+  const exportedAt = new Date().toISOString();
+  return {
+    exportedAt,
+    source: "video-wizard",
+    inputStructureVersion: DATA_INPUT_STRUCTURE.version,
+    inputStructureLastUpdated: DATA_INPUT_STRUCTURE.last_updated,
+    steps: STEP_META.map((item, index) => ({ step: index + 1, label: item.label })),
+    inputs: {
+      product: {
+        industry: selectedOption(INDUSTRIES, form.industry),
+        product: selectedOption(PRODUCTS[form.industry] || [], form.product),
+      },
+      audience: {
+        audience: selectedOption(AUDIENCES, form.audience),
+        problems: [...form.problems],
+      },
+      appearance: {
+        scene: selectedOption(SCENES, form.scene),
+        gender: selectedOption(GENDERS, form.gender),
+        clothing: selectedOption(CLOTHING[form.gender] || [], form.clothing),
+        colorTheme: selectedOption(COLOR_THEMES, form.colorTheme),
+        pose: selectedOption(POSES, form.pose),
+        voiceoverLanguage: form.voiceoverLanguage,
+        voiceoverTone: selectedOption(VOICEOVER_TONES, form.voiceoverTone),
+        avatar: uploadToJson(form.avatar),
+      },
+      video: {
+        duration: form.duration,
+        aspectRatio: selectedOption(ASPECT_RATIOS, form.aspectRatio),
+        music: selectedOption(MUSIC_OPTIONS, form.music),
+      },
+      supportingVisuals: {
+        broll: selectedOption(BROLL_TYPES, form.broll),
+        subtitle: selectedOption(SUBTITLES, form.subtitle),
+        cta: selectedOption(CTAS, form.cta),
+        ctaType: selectedOption(CTA_TYPES, form.ctaType),
+        ctaValue: form.ctaValue,
+      },
+      brand: {
+        brandName: form.brandName,
+        brandWords: form.brandWords,
+        productDescription: form.productDesc,
+        roi: {
+          customText: form.roi,
+          activeSuggestions: activeRoiSuggestions(form),
+          dismissedSuggestions: [...(form.roiDismissed || [])],
+        },
+        logo: uploadToJson(form.logo),
+        productImages: form.productImages.map((image, index) => ({
+          index: index + 1,
+          description: image.desc || "",
+          ...uploadToJson(image),
+        })),
+      },
+    },
+  };
+}
+
+function safeFilenamePart(value) {
+  return (value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 48) || "request";
+}
+
+function makeVideoRequestFilename(form, exportedAt) {
+  const stamp = exportedAt.replace(/[:.]/g, "-");
+  return `video-request-${safeFilenamePart(form.brandName)}-${stamp}.json`;
+}
+
+function downloadJson(payload, filename) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function saveJsonFile(payload, filename) {
+  if (typeof window.showSaveFilePicker === "function") {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [
+          {
+            description: "JSON file",
+            accept: { "application/json": [".json"] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" }));
+      await writable.close();
+      return true;
+    } catch (error) {
+      if (error?.name === "AbortError") return false;
+      console.warn("Falling back to browser download after save picker failed.", error);
+    }
+  }
+  downloadJson(payload, filename);
+  return true;
+}
+
 // ─── UI PRIMITIVES ───────────────────────────────────────────────
 function Q({ children, sub }) {
   return (
@@ -2233,9 +2387,13 @@ function AvatarUpload({ form, setForm }) {
           </div>
         )}
       <input ref={ref} type="file" accept="image/*" className="hidden"
-        onChange={e => {
+        onChange={async e => {
           const fi = e.target.files[0];
-          if (fi) setForm(f => ({ ...f, avatar: { file: fi, url: URL.createObjectURL(fi), name: fi.name } }));
+          if (fi) {
+            const upload = await buildUploadRecord(fi);
+            setForm(f => ({ ...f, avatar: upload }));
+          }
+          e.target.value = "";
         }} />
     </div>
   );
@@ -2415,17 +2573,24 @@ function Step6({ form, setForm }) {
   const productImageGuide = inputGuide("upl-prod");
   const imageDescGuide = inputGuide("prod-img-desc");
   const roiSuggestions = activeRoiSuggestions(form);
-  const handleLogo = e => {
+  const handleLogo = async e => {
     const fi = e.target.files[0];
-    if (fi) setForm(f => ({ ...f, logo: { file: fi, url: URL.createObjectURL(fi), name: fi.name } }));
-  };
-  const handleImgs = e => {
-    const files = Array.from(e.target.files);
-    setForm(f => {
-      const rem = MAX - f.productImages.length;
-      return { ...f, productImages: [...f.productImages, ...files.slice(0, rem).map(fi => ({ file: fi, url: URL.createObjectURL(fi), name: fi.name, desc: "" }))] };
-    });
     e.target.value = "";
+    if (!fi) return;
+    const upload = await buildUploadRecord(fi);
+    setForm(f => ({ ...f, logo: upload }));
+  };
+  const handleImgs = async e => {
+    const files = Array.from(e.target.files || []);
+    const rem = MAX - form.productImages.length;
+    const nextFiles = files.slice(0, rem);
+    e.target.value = "";
+    if (!nextFiles.length) return;
+    const records = await Promise.all(nextFiles.map(async fi => ({ ...(await buildUploadRecord(fi)), desc: "" })));
+    setForm(f => {
+      const remaining = MAX - f.productImages.length;
+      return { ...f, productImages: [...f.productImages, ...records.slice(0, remaining)] };
+    });
   };
   return (
     <div>
@@ -2628,20 +2793,35 @@ export default function App() {
   const [step, setStep]   = useState(1);
   const [done, setDone]   = useState(false);
   const [form, setForm]   = useState(DEFAULT);
+  const [saving, setSaving] = useState(false);
   const topRef            = useRef();
 
   const allIssues = useMemo(() => runValidation(form), [form]);
-  const ok        = canProceed(step, form);
+  const ok        = canProceed(step, form) && !saving;
 
   const scrollTop = () => {
     topRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
     window.scrollTo(0, 0);
   };
 
-  const goNext = () => {
+  const goNext = async () => {
     if (!ok) return;
-    if (step === 6) { setDone(true); }
-    else setStep(s => s + 1);
+    if (step === 6) {
+      setSaving(true);
+      try {
+        const payload = buildVideoRequestJson(form);
+        const saved = await saveJsonFile(payload, makeVideoRequestFilename(form, payload.exportedAt));
+        if (!saved) return;
+        setDone(true);
+      } catch (error) {
+        console.error("Could not save video request JSON.", error);
+        window.alert("ذخیره فایل JSON انجام نشد. لطفاً دوباره تلاش کنید.");
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      setStep(s => s + 1);
+    }
     scrollTop();
   };
   const goPrev = () => { setStep(s => s - 1); scrollTop(); };
@@ -2686,7 +2866,7 @@ export default function App() {
                     className={`flex items-center gap-1.5 text-sm font-bold px-6 py-2.5 rounded-xl transition-all
                       ${ok ? "bg-blue-600 text-white hover:bg-blue-700 shadow-sm" : "bg-gray-100 text-gray-400 cursor-not-allowed"}`}>
                     <ChevronLeft size={16} />
-                    {step === 6 ? "ساخت ویدیو" : "مرحله بعد"}
+                    {saving ? "در حال ذخیره..." : step === 6 ? "ساخت ویدیو" : "مرحله بعد"}
                   </button>
                 </div>
               </>
